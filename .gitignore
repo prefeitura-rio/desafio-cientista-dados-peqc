@@ -1,0 +1,12 @@
+target/
+dbt_packages/
+logs/
+data/*
+!data/.gitkeep
+.venv*/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.json
+!package-lock.json
+.env

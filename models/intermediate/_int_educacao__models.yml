@@ -1,0 +1,112 @@
+version: 2
+
+# Na camada intermediate testamos sobretudo o GRÃO resultante dos joins e as
+# flags que os marts consomem. Testes de domínio já foram feitos no staging e
+# não são repetidos (evita custo de query duplicado no BigQuery).
+
+models:
+  - name: int_educacao__aluno_escola
+    description: >
+      Escola principal de cada aluno no ano letivo, inferida da frequência
+      (escola com mais períodos registrados). Grão: 1 linha por aluno.
+    columns:
+      - name: id_aluno
+        tests:
+          - not_null
+          - unique             # o row_number garante; se quebrar, os marts dobram alunos
+          - relationships:
+              arguments:
+                to: ref('stg_educacao__aluno')
+                field: id_aluno
+      - name: id_escola_principal
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_educacao__escola')
+                field: id_escola
+      - name: qtd_periodos_na_escola
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 1, max_value: 11}}  # 11 períodos no ano
+      - name: qtd_escolas_no_ano
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 1}}
+      - name: flag_transferencia
+        tests:
+          - not_null
+
+  - name: int_educacao__aluno_frequencia_periodo
+    description: >
+      Frequência consolidada (média das 4 disciplinas) por aluno, escola e período.
+      Grão: aluno x escola x data_inicio_periodo.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [id_aluno, id_escola, data_inicio_periodo]
+    columns:
+      - name: id_aluno
+        tests: [not_null]
+      - name: id_escola
+        tests: [not_null]
+      - name: data_inicio_periodo
+        tests: [not_null]
+      - name: percentual_frequencia_medio
+        tests:
+          - not_null
+          - valid_percentage
+      - name: percentual_frequencia_minimo
+        tests:
+          - valid_percentage
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "<= percentual_frequencia_medio"   # mínimo nunca excede a média
+      - name: qtd_disciplinas
+        description: Disciplinas apuradas no período (esperado 4).
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 1, max_value: 4}}
+      - name: flag_abaixo_limiar
+        tests: [not_null]
+
+  - name: int_educacao__aluno_desempenho_bimestre
+    description: >
+      Avaliação bimestral enriquecida com cadastro, matrícula e escola principal.
+      Grão: aluno x turma x bimestre.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [id_aluno, id_turma, bimestre]
+      # Reconciliação: nenhum registro de avaliação pode ser perdido no join
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('stg_educacao__avaliacao')
+    columns:
+      - name: id_aluno
+        tests: [not_null]
+      - name: id_turma
+        tests: [not_null]
+      - name: bimestre
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4]
+                quote: false
+      - name: id_escola
+        description: Escola principal do aluno (nula quando o aluno não tem frequência).
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_educacao__escola')
+                field: id_escola
+      - name: media_notas
+        description: Média das notas existentes no bimestre (0..10); nula sem notas.
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: flag_frequencia_abaixo_limiar
+        description: TRUE se frequência bimestral < limiar (75%). Nula quando não há frequência.
+      - name: flag_notas_zeradas
+        description: TRUE quando todas as notas existentes são <= 0,5 (provável "sem nota").
+      - name: flag_turma_nao_cadastrada
+        tests: [not_null]
+      - name: flag_sem_escola_inferida
+        tests: [not_null]

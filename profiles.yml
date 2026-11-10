@@ -1,0 +1,17 @@
+# Profile versionado para reprodutibilidade. Nenhum segredo aqui: a autenticação
+# usa Application Default Credentials (gcloud auth application-default login)
+# ou, no CI, a variável DBT_GCP_KEYFILE apontando para um JSON de service account.
+rmi_educacao:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: "{{ env_var('DBT_BQ_METHOD', 'oauth') }}"
+      keyfile: "{{ env_var('DBT_GCP_KEYFILE', '') }}"
+      project: "{{ env_var('DBT_GCP_PROJECT') }}"
+      dataset: "{{ env_var('DBT_BQ_DATASET', 'rmi_dbt') }}"
+      location: "{{ env_var('DBT_BQ_LOCATION', 'US') }}"
+      threads: 8
+      timeout_seconds: 300
+      priority: interactive
+      job_retries: 1

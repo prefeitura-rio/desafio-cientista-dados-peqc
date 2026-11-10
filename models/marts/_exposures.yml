@@ -1,0 +1,19 @@
+version: 2
+
+exposures:
+  - name: painel_absenteismo_escolar
+    label: Painel de absenteísmo escolar por região
+    type: dashboard
+    maturity: medium
+    description: >
+      Painel para gestores da Secretaria Municipal de Educação com ranking de
+      escolas e regiões por taxa de absenteísmo crônico e desempenho por perfil
+      de turma. Declarado como exposure para que `dbt ls --select +exposure:painel_absenteismo_escolar`
+      mostre todo o lineage que alimenta o painel e para que mudanças nos marts
+      sejam avaliadas quanto ao impacto downstream.
+    depends_on:
+      - ref('mart_educacao__absenteismo_escola')
+      - ref('mart_educacao__desempenho_turma')
+    owner:
+      name: Time de Dados - RMI
+      email: dados@exemplo.rio.gov.br

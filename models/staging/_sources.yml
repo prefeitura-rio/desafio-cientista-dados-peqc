@@ -1,0 +1,94 @@
+version: 2
+
+sources:
+  - name: rmi_raw
+    description: >
+      Dados brutos do desafio (Parquets do bucket gs://case_vagas/rmi carregados
+      via `bq load` no dataset `alunos`). Anonimizados e aleatorizados: IDs são hashes
+      com salt, datas foram levadas para o ano 2000 e notas receberam jitter de ±0,2.
+    database: "{{ var('raw_project', target.project) }}"
+    schema: "{{ var('raw_dataset', 'alunos') }}"
+    loader: bq load (Parquet)
+    # Freshness: as tabelas são uma carga única sem coluna de ingestão, portanto a
+    # verificação clássica (loaded_at_field) não se aplica. O bloco abaixo documenta
+    # a intenção e passa a valer assim que uma coluna `_loaded_at` for adicionada
+    # pelo pipeline de carga (basta descomentar).
+    # freshness:
+    #   warn_after: {count: 1, period: day}
+    #   error_after: {count: 7, period: day}
+    # loaded_at_field: _loaded_at
+
+    tables:
+      - name: aluno
+        description: Cadastro de alunos (1 linha por aluno). 97.044 linhas na carga de referência.
+        columns:
+          - name: id_aluno
+            description: Hash do aluno (BYTES, 34 bytes). Chave primária.
+            tests:
+              - not_null
+              - unique
+          - name: id_turma
+            description: Hash da turma em que o aluno está matriculado (INT64).
+          - name: faixa_etaria
+            description: "Faixa etária agrupada: 0-5, 6-10, 11-14, 15-17, 18+."
+          - name: bairro
+            description: Hash do bairro de residência (FLOAT64 na origem por conter nulos).
+
+      - name: escola
+        description: Cadastro de unidades escolares (1 linha por escola). 1.558 linhas.
+        columns:
+          - name: id_escola
+            description: Hash da escola (INT64). Chave primária.
+            tests:
+              - not_null
+              - unique
+          - name: bairro
+            description: Hash do bairro da escola (INT64). Salt diferente do bairro do aluno.
+
+      - name: turma
+        description: >
+          Relação aluno x turma do ano letivo (1 linha por aluno). Funciona como
+          tabela de matrícula, não como cadastro de turmas.
+        columns:
+          - name: ano
+            description: Ano letivo (anonimizado para 2000).
+          - name: id_turma
+            description: Hash da turma.
+          - name: id_aluno
+            description: Hash do aluno (BYTES).
+
+      - name: frequencia
+        description: >
+          Frequência por aluno, disciplina e período de apuração (~mensal).
+          2,73 milhões de linhas; 11 períodos; 4 disciplinas.
+        columns:
+          - name: id_escola
+          - name: id_aluno
+          - name: id_turma
+          - name: data_inicio
+            description: Início do período (STRING 'YYYY-MM-DD').
+          - name: data_fim
+            description: Fim do período (STRING 'YYYY-MM-DD').
+          - name: disciplina
+            description: Código genérico (disciplina_1..4).
+          - name: frequencia
+            description: Percentual de frequência (100 - faltas/dias letivos).
+
+      - name: avaliacao
+        description: >
+          Notas por bimestre e frequência bimestral geral do aluno. 221.687 linhas.
+        columns:
+          - name: id_aluno
+          - name: id_turma
+          - name: frequencia
+            description: Percentual de frequência geral do aluno no bimestre.
+          - name: bimestre
+            description: Bimestre (STRING '1'..'4' na origem).
+          - name: disciplina_1
+            description: Nota de Língua Portuguesa.
+          - name: disciplina_2
+            description: Nota de Ciências.
+          - name: disciplina_3
+            description: Nota de Inglês (100% nula na carga de referência).
+          - name: disciplina_4
+            description: Nota de Matemática.

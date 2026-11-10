@@ -1,0 +1,184 @@
+version: 2
+
+# Marts têm data contracts habilitados (enforced: true): o schema é parte do
+# contrato com dashboards e consumidores; mudar tipo/nome de coluna quebra o build
+# em vez de quebrar silenciosamente um painel.
+
+models:
+  - name: mart_educacao__absenteismo_escola
+    description: >
+      Absenteísmo crônico por escola e região anonimizada. Grão: 1 linha por escola.
+      Taxa calculada sobre alunos com frequência bimestral disponível.
+    config:
+      contract:
+        enforced: true
+    tests:
+      # Reconciliação: toda escola do cadastro deve estar no mart e nenhuma a mais
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('stg_educacao__escola')
+      # Consistência interna: absenteísmo crônico é subconjunto dos avaliados
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "qtd_alunos_absenteismo_cronico <= qtd_alunos_com_frequencia_bimestral"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "qtd_alunos_com_frequencia_bimestral <= qtd_alunos"
+    columns:
+      - name: id_escola
+        data_type: int64
+        description: Identificador da escola (hash).
+        tests:
+          - not_null
+          - unique
+      - name: id_bairro_hash
+        data_type: int64
+        description: Região anonimizada (hash do bairro da escola).
+        tests: [not_null]
+      - name: qtd_alunos
+        data_type: int64
+        description: Alunos cuja escola principal é esta.
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0}}
+      - name: qtd_alunos_transferidos
+        data_type: int64
+        description: Alunos com frequência em mais de uma escola no ano.
+      - name: qtd_alunos_com_frequencia_bimestral
+        data_type: int64
+        description: Denominador da taxa de absenteísmo.
+      - name: qtd_alunos_absenteismo_cronico
+        data_type: int64
+        description: Alunos com frequência anual média < 75%.
+      - name: qtd_alunos_algum_bimestre_abaixo_limiar
+        data_type: int64
+        description: Alunos com ao menos um bimestre abaixo de 75% (sinal precoce).
+      - name: taxa_absenteismo_cronico
+        data_type: float64
+        description: "% de alunos com absenteísmo crônico entre os que têm frequência bimestral."
+        tests:
+          - valid_percentage
+      - name: cobertura_frequencia_bimestral
+        data_type: float64
+        description: "% dos alunos da escola com frequência bimestral registrada."
+        tests:
+          - valid_percentage
+      - name: percentual_frequencia_anual_medio
+        data_type: float64
+        tests:
+          - valid_percentage
+      - name: percentual_frequencia_disciplinas_medio
+        data_type: float64
+        description: Média da frequência por disciplina (tabela frequencia). Indicador complementar.
+        tests:
+          - valid_percentage
+      - name: qtd_periodos_apurados
+        data_type: int64
+      - name: media_notas_escola
+        data_type: float64
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: flag_escola_sem_alunos
+        data_type: boolean
+        description: TRUE para escolas do cadastro sem nenhum aluno com frequência (66% das 1.558).
+        tests: [not_null]
+      - name: ranking_absenteismo_rede
+        data_type: int64
+        description: Posição na rede (1 = pior), apenas escolas com >= 30 alunos avaliados.
+      - name: ranking_absenteismo_regiao
+        data_type: int64
+        description: Posição dentro da região anonimizada (1 = pior), apenas escolas com >= 30 alunos avaliados.
+
+  - name: mart_educacao__desempenho_turma
+    description: >
+      Composição e desempenho por turma. Grão: 1 linha por turma do cadastro de matrícula.
+    config:
+      contract:
+        enforced: true
+    tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "qtd_alunos_avaliados <= tamanho_turma"
+          config:
+            severity: warn   # avaliação pode trazer aluno em turma diferente da matrícula (9%)
+    columns:
+      - name: id_turma
+        data_type: int64
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_educacao__turma')
+                field: id_turma
+      - name: ano_letivo
+        data_type: int64
+        tests: [not_null]
+      - name: id_escola
+        data_type: int64
+        description: Escola predominante entre os alunos avaliados da turma (nula sem avaliação).
+      - name: tamanho_turma
+        data_type: int64
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 1}}
+      - name: faixa_tamanho_turma
+        data_type: string
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['01-05', '06-15', '16-30', '31+']
+      - name: faixa_etaria_predominante
+        data_type: string
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['0-5', '6-10', '11-14', '15-17', '18+']
+      - name: qtd_faixas_etarias
+        data_type: int64
+      - name: flag_turma_multisseriada
+        data_type: boolean
+        tests: [not_null]
+      - name: qtd_alunos_avaliados
+        data_type: int64
+      - name: cobertura_avaliacao
+        data_type: float64
+        description: "% de alunos da turma com alguma avaliação (pode passar de 100 quando a avaliação traz alunos de outra matrícula)."
+      - name: qtd_bimestres_avaliados
+        data_type: int64
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 1, max_value: 4}}
+      - name: qtd_registros_avaliacao
+        data_type: int64
+      - name: media_lingua_portuguesa
+        data_type: float64
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: media_ciencias
+        data_type: float64
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: media_matematica
+        data_type: float64
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: media_geral
+        data_type: float64
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: percentual_frequencia_medio
+        data_type: float64
+        tests:
+          - valid_percentage
+      - name: qtd_registros_notas_zeradas
+        data_type: int64
+      - name: taxa_registros_abaixo_media_minima
+        data_type: float64
+        tests:
+          - valid_percentage
+      - name: taxa_registros_frequencia_abaixo_limiar
+        data_type: float64
+        tests:
+          - valid_percentage
+      - name: flag_turma_sem_avaliacao
+        data_type: boolean
+        tests: [not_null]

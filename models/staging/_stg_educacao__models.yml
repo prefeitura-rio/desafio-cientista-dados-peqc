@@ -1,0 +1,214 @@
+version: 2
+
+# ---------------------------------------------------------------------------
+# Estratégia de testes na camada de staging
+#
+# Cada teste abaixo tem um "porquê". Resumo da lógica:
+#   * unique + not_null nas chaves  -> garantem o GRÃO declarado de cada model;
+#     tudo a jusante (joins, agregações) depende disso.
+#   * accepted_values              -> protegem domínios usados em CASE/filtros
+#     nos marts (faixa etária, disciplina, bimestre). Um valor novo quebraria
+#     silenciosamente as agregações.
+#   * relationships                -> medem integridade referencial. Onde a
+#     fonte sabidamente tem órfãos (frequencia.id_turma), o teste é WARN com
+#     limiar explícito: queremos monitorar, não bloquear o build.
+#   * valid_percentage / between   -> contratos de domínio numérico.
+# ---------------------------------------------------------------------------
+
+models:
+  - name: stg_educacao__aluno
+    description: >
+      Cadastro de alunos limpo. Grão: 1 linha por aluno. id_aluno convertido de
+      BYTES para STRING hexadecimal. Bairro é um hash anonimizado (não cruza com
+      o hash de bairro da escola).
+    columns:
+      - name: id_aluno
+        description: Identificador do aluno (hash em hex, 68 caracteres). Chave primária.
+        tests:
+          - not_null          # sem chave não há como ligar frequência/avaliação
+          - unique            # grão do cadastro; duplicata aqui multiplicaria linhas nos joins
+      - name: id_turma
+        description: Turma de matrícula do aluno no ano letivo.
+        tests:
+          - not_null
+          - relationships:    # todo aluno deve ter matrícula na tabela turma
+              arguments:
+                to: ref('stg_educacao__turma')
+                field: id_turma
+      - name: faixa_etaria
+        description: "Faixa etária: 0-5, 6-10, 11-14, 15-17, 18+."
+        tests:
+          - not_null:
+              config:
+                severity: warn   # a fonte não tem nulos, mas um nulo não invalida o aluno
+          - accepted_values:
+              arguments:
+                values: ['0-5', '6-10', '11-14', '15-17', '18+']
+      - name: id_bairro_hash
+        description: Hash do bairro de residência (INT64). Nulo para 68 alunos.
+      - name: flag_bairro_nao_informado
+        description: TRUE quando o bairro é nulo na origem.
+        tests:
+          - not_null
+
+  - name: stg_educacao__escola
+    description: "Cadastro de unidades escolares. Grão: 1 linha por escola."
+    columns:
+      - name: id_escola
+        description: Identificador da escola (hash INT64). Chave primária.
+        tests:
+          - not_null
+          - unique
+      - name: id_bairro_hash
+        description: Hash do bairro onde a escola fica ("região" anonimizada). 169 valores distintos.
+        tests:
+          - not_null          # região é a dimensão principal do mart de absenteísmo
+
+  - name: stg_educacao__turma
+    description: >
+      Matrícula aluno x turma do ano letivo. Grão: 1 linha por aluno (cada aluno
+      tem exatamente uma turma na carga de referência).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [id_aluno, id_turma]   # grão de matrícula
+    columns:
+      - name: id_aluno
+        description: Identificador do aluno (hex).
+        tests:
+          - not_null
+          - unique            # 1 matrícula por aluno no ano; se mudar, o mart de turma precisa de revisão
+          - relationships:
+              arguments:
+                to: ref('stg_educacao__aluno')
+                field: id_aluno
+      - name: id_turma
+        description: Identificador da turma (hash INT64).
+        tests:
+          - not_null
+      - name: ano_letivo
+        description: Ano letivo (anonimizado para 2000).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["{{ var('ano_letivo') }}"]
+                quote: false
+
+  - name: stg_educacao__frequencia
+    description: >
+      Frequência por aluno, turma, escola, disciplina e período de apuração, após
+      remoção de duplicatas exatas. Grão alvo: aluno x turma x escola x disciplina x período.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [id_aluno, id_turma, id_escola, codigo_disciplina, data_inicio_periodo]
+          config:
+            severity: warn     # ~1.100 duplicatas com valores divergentes são conhecidas; resolvidas no intermediate
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "data_fim_periodo >= data_inicio_periodo"   # período de apuração coerente
+    columns:
+      - name: id_aluno
+        tests:
+          - not_null
+          - relationships:     # toda frequência deve ser de um aluno cadastrado (100% na fonte)
+              arguments:
+                to: ref('stg_educacao__aluno')
+                field: id_aluno
+      - name: id_escola
+        tests:
+          - not_null
+          - relationships:     # escola precisa existir para o mart por região
+              arguments:
+                to: ref('stg_educacao__escola')
+                field: id_escola
+      - name: id_turma
+        tests:
+          - not_null
+          - relationships:     # ~12% das linhas apontam para turmas fora do cadastro: monitorar, não bloquear
+              arguments:
+                to: ref('stg_educacao__turma')
+                field: id_turma
+              config:
+                severity: warn
+                warn_if: ">0"
+      - name: data_inicio_periodo
+        tests:
+          - not_null
+      - name: data_fim_periodo
+        tests:
+          - not_null
+      - name: codigo_disciplina
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['disciplina_1', 'disciplina_2', 'disciplina_3', 'disciplina_4']
+      - name: nome_disciplina
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Língua Portuguesa', 'Ciências', 'Língua Estrangeira (Inglês)', 'Matemática']
+      - name: percentual_frequencia
+        description: Percentual de frequência na disciplina no período (0..100).
+        tests:
+          - not_null
+          - valid_percentage
+      - name: mes_periodo
+        description: Mês de início do período (1..12), usado para agregações mensais.
+
+  - name: stg_educacao__avaliacao
+    description: >
+      Notas e frequência bimestral após deduplicação. Grão: aluno x turma x bimestre.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [id_aluno, id_turma, bimestre]   # grão garantido pelo row_number
+    columns:
+      - name: id_aluno
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_educacao__aluno')
+                field: id_aluno
+      - name: id_turma
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_educacao__turma')
+                field: id_turma
+              config:
+                severity: warn   # 0,08% de órfãos na fonte
+      - name: bimestre
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4]
+                quote: false
+      - name: percentual_frequencia_bimestre
+        description: Frequência geral do aluno no bimestre (0..100). Base do indicador de absenteísmo.
+        tests:
+          - valid_percentage
+      - name: nota_lingua_portuguesa
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: nota_ciencias
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: nota_ingles
+        description: 100% nula na carga de referência; mantida por contrato.
+      - name: nota_matematica
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 10}}
+      - name: qtd_notas_preenchidas
+        description: Quantidade de disciplinas com nota no registro (0..4).
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 0, max_value: 4}}
+      - name: qtd_registros_fonte
+        description: Quantas linhas a fonte tinha para este (aluno, turma, bimestre). >1 indica duplicata removida.
+        tests:
+          - dbt_utils.accepted_range: {arguments: {min_value: 1}}
