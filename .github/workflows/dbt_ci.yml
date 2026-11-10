@@ -13,6 +13,8 @@ jobs:
       DBT_GCP_PROJECT: ${{ secrets.DBT_GCP_PROJECT }}
       DBT_BQ_DATASET: rmi_dbt_ci
       DBT_BQ_LOCATION: ${{ vars.DBT_BQ_LOCATION || 'southamerica-east1' }}
+      # `secrets` não pode ser usado diretamente em `if`; convertemos para env.
+      HAS_GCP_KEY: ${{ secrets.GCP_SA_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,13 +37,13 @@ jobs:
 
       # Só roda quando o segredo do service account estiver configurado no repositório.
       - name: Autentica no GCP
-        if: ${{ secrets.GCP_SA_KEY != '' }}
+        if: env.HAS_GCP_KEY == 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: dbt build
-        if: ${{ secrets.GCP_SA_KEY != '' }}
+        if: env.HAS_GCP_KEY == 'true'
         run: dbt build --fail-fast
 
       - name: Publica artefatos
