@@ -115,7 +115,7 @@ pip install -r requirements.txt
 ```bash
 gcloud auth login --update-adc
 export DBT_GCP_PROJECT=<seu-projeto>
-bq --project_id=$DBT_GCP_PROJECT mk --dataset --location=US alunos
+bq --project_id=$DBT_GCP_PROJECT mk --dataset --location=southamerica-east1 alunos
 for t in aluno escola turma frequencia avaliacao; do
   bq --project_id=$DBT_GCP_PROJECT load --source_format=PARQUET alunos.$t gs://case_vagas/rmi/$t
 done
@@ -132,7 +132,7 @@ O `profiles.yml` está versionado e lê tudo de variáveis de ambiente (sem segr
 |---|---|---|
 | `DBT_GCP_PROJECT` | – (obrigatória) | projeto GCP |
 | `DBT_BQ_DATASET` | `rmi_dbt` | prefixo dos datasets de saída |
-| `DBT_BQ_LOCATION` | `US` | location do BigQuery |
+| `DBT_BQ_LOCATION` | `southamerica-east1` | location do BigQuery (deve ser a mesma do dataset `alunos`) |
 | `DBT_BQ_METHOD` | `oauth` | `service-account` no CI (+ `DBT_GCP_KEYFILE`) |
 
 ```bash
@@ -143,8 +143,9 @@ dbt docs generate && dbt docs serve
 ```
 
 Se os dados brutos estiverem em outro projeto/dataset, use
-`--vars '{raw_project: outro-projeto, raw_dataset: outro_dataset}'`. Se `id_aluno` já estiver como
-STRING, use `--vars '{id_aluno_is_bytes: false}'`.
+`--vars '{raw_project: outro-projeto, raw_dataset: outro_dataset}'`. A tabela de alunos é lida como
+`alunos` (nome usado na carga); se a sua se chamar `aluno`, use `--vars '{raw_aluno_table: aluno}'`.
+Se `id_aluno` já estiver como STRING, use `--vars '{id_aluno_is_bytes: false}'`.
 
 Seleções úteis: `dbt build --select tag:staging`, `dbt build --select +mart_educacao__absenteismo_escola`,
 `dbt ls --select +exposure:painel_absenteismo_escolar`.
@@ -254,7 +255,63 @@ Todos passam no `dbt build` (ver seção 6).
 > Dados anonimizados e aleatorizados: os números abaixo servem para validar a modelagem, não para
 > conclusões sobre a rede real.
 
-_(preenchido após o `dbt build` – ver seção 6 abaixo)_
+### 6.1 Resultado do `dbt build`
+
+```
+Finished running 1 exposure, 1 project hook, 2 table models, 113 data tests, 8 view models
+Done. PASS=120 WARN=4 ERROR=0 SKIP=0
+```
+
+Os 4 avisos são as anomalias conhecidas da fonte, monitoradas de propósito com `severity: warn`:
+
+| Aviso | Linhas | Leitura |
+|---|---|---|
+| unicidade do grão em `stg_educacao__frequencia` | 1.093 | pares com mesmo grão e valor diferente (resolvidos por média no intermediate) |
+| `frequencia.id_turma` → `turma` | 338.436 | 12 % das linhas apontam para turmas fora do cadastro |
+| `avaliacao.id_turma` → `turma` | 183 | 0,08 % de avaliações em turma não cadastrada |
+| `qtd_alunos_avaliados <= tamanho_turma` no mart de turma | 1.158 | avaliação traz alunos de turma diferente da matrícula (9 %) |
+
+### 6.2 Absenteísmo crônico por escola
+
+| Métrica (rede) | Valor |
+|---|---|
+| Escolas no cadastro / com alunos | 1.558 / 521 |
+| Alunos com frequência bimestral | 68.733 |
+| Alunos com absenteísmo crônico (média anual < 75 %) | 7.155 (**10,4 %**) |
+| Frequência anual média (bimestral) / média por disciplina | 87,3 % / 99,9 % |
+| Escolas elegíveis ao ranking (≥ 30 avaliados) | 421 |
+
+* Entre as 421 escolas rankeadas, a taxa vai de 1,7 % a 23,3 %; quartis em 8,8 / 10,6 / 12,2 %. A escola
+  no topo tem 23 % dos alunos avaliados abaixo do limiar – mais que o dobro da mediana.
+* Agregando por região anonimizada (bairros com ≥ 3 escolas rankeadas), as taxas ficam entre 12 % e 13,5 %:
+  a variação relevante está **entre escolas**, não entre regiões – o que sugere ação por unidade.
+* A taxa de absenteísmo tem correlação negativa com a média de notas da escola (r = −0,39) e a frequência
+  anual média, positiva (r = +0,38) – coerente com a literatura e um indício de que o indicador capturou sinal real,
+  mesmo em dados aleatorizados.
+* A medida complementar (frequência por disciplina, 99,9 %) confirma que a tabela `frequencia` não serviria para
+  este indicador – ponto discutido na seção 4.
+
+### 6.3 Desempenho por perfil de turma
+
+| Faixa de tamanho | Turmas | Com avaliação | Média geral | Freq. média | % registros < 5 | % registros < 75 % freq |
+|---|---|---|---|---|---|---|
+| 1–5 alunos | 14.522 | 8.723 | 4,12 | 80,8 % | 58 % | 27 % |
+| 6–15 | 1.236 | 1.145 | 3,75 | 78,4 % | 64 % | 32 % |
+| 16–30 | 332 | 332 | 5,43 | 86,7 % | 32 % | 16 % |
+| 31+ | 1.221 | 1.221 | 6,24 | 90,6 % | 19 % | 6 % |
+
+* Turmas **maiores** têm notas e frequência melhores (r tamanho×nota = 0,46; tamanho×frequência = 0,17), o oposto
+  do senso comum. A explicação está na composição: turmas de 31+ são quase todas de 15–17 anos (tamanho médio 26),
+  enquanto 84 % das turmas têm ≤ 5 alunos e concentram 0–5, 6–10 e 11–14 anos. A anonimização pulverizou as turmas
+  pequenas; a leitura correta é "**perfil etário** explica desempenho", não tamanho.
+* Turmas de 0–5 e 6–10 anos **não têm notas** (só frequência), o que é esperado para educação infantil e
+  anos iniciais; 0–5 tem a pior frequência (70,7 %, 45 % dos registros abaixo do limiar).
+* Frequência e nota andam juntas no nível da turma (r = 0,63): o absenteísmo é um bom alvo de intervenção
+  também pelo efeito em aprendizagem.
+* 2.312 registros com todas as notas ≈ 0 (`qtd_registros_notas_zeradas`) foram mantidos; excluí-los elevaria a
+  média geral das turmas de 1–5 alunos em ~0,3 ponto – decisão deixada para o analista, com o número à vista.
+* 5.890 turmas (34 %) não têm nenhuma avaliação (`flag_turma_sem_avaliacao`), apesar de todos os seus alunos terem
+  frequência: a cobertura de avaliação é outro problema de qualidade a investigar na fonte.
 
 ---
 

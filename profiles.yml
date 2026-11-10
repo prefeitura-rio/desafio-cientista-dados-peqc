@@ -10,7 +10,7 @@ rmi_educacao:
       keyfile: "{{ env_var('DBT_GCP_KEYFILE', '') }}"
       project: "{{ env_var('DBT_GCP_PROJECT') }}"
       dataset: "{{ env_var('DBT_BQ_DATASET', 'rmi_dbt') }}"
-      location: "{{ env_var('DBT_BQ_LOCATION', 'US') }}"
+      location: "{{ env_var('DBT_BQ_LOCATION', 'southamerica-east1') }}"
       threads: 8
       timeout_seconds: 300
       priority: interactive

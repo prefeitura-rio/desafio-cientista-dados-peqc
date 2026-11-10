@@ -12,7 +12,7 @@ jobs:
       DBT_PROFILES_DIR: .
       DBT_GCP_PROJECT: ${{ secrets.DBT_GCP_PROJECT }}
       DBT_BQ_DATASET: rmi_dbt_ci
-      DBT_BQ_LOCATION: ${{ vars.DBT_BQ_LOCATION || 'US' }}
+      DBT_BQ_LOCATION: ${{ vars.DBT_BQ_LOCATION || 'southamerica-east1' }}
     steps:
       - uses: actions/checkout@v4
 

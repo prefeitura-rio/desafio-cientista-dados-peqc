@@ -20,6 +20,9 @@ sources:
 
     tables:
       - name: aluno
+        # No BigQuery do autor a tabela foi carregada como `alunos`; o nome lógico no dbt
+        # continua `aluno` (igual ao Parquet). Ajuste via --vars '{raw_aluno_table: aluno}'.
+        identifier: "{{ var('raw_aluno_table', 'alunos') }}"
         description: Cadastro de alunos (1 linha por aluno). 97.044 linhas na carga de referência.
         columns:
           - name: id_aluno
@@ -32,7 +35,7 @@ sources:
           - name: faixa_etaria
             description: "Faixa etária agrupada: 0-5, 6-10, 11-14, 15-17, 18+."
           - name: bairro
-            description: Hash do bairro de residência (FLOAT64 na origem por conter nulos).
+            description: Hash do bairro de residência (FLOAT64 no Parquet por conter nulos; INT64 após o bq load).
 
       - name: escola
         description: Cadastro de unidades escolares (1 linha por escola). 1.558 linhas.
